@@ -22,9 +22,14 @@ package cmd
 
 import (
 	"fmt"
+	"io/ioutil"
+	"log"
+	"net/http"
 
 	"github.com/spf13/cobra"
 )
+
+var server string
 
 // scanCmd represents the scan command
 var scanCmd = &cobra.Command{
@@ -32,7 +37,19 @@ var scanCmd = &cobra.Command{
 	Short: "Connect to a blackice server to retrieve a list of reachable hosts",
 	Long:  `Connect to a blackice server to retrieve a list of reachable hosts.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("scan called")
+		if server != "" {
+			fmt.Printf("Connecting to server <%s>\n", server)
+			url := server + "/"
+			res, err := scanRequest("GET", url)
+			if err != nil {
+				fmt.Printf("Error occurred: %s\n", err.Error())
+			} else {
+				fmt.Println(res)
+			}
+		} else {
+			fmt.Printf("Usage error: When using the scan command, you must specify a server.\n\n")
+			fmt.Println("Example usage: onosendai scan -server blackice.maaslabs.com")
+		}
 	},
 }
 
@@ -47,5 +64,29 @@ func init() {
 
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
-	// scanCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	//scanCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	scanCmd.Flags().StringVarP(&server, "server", "s", "", "blackice Server to connect to")
+}
+
+func scanRequest(method string, url string) (string, error) {
+	// Build the request
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Fatal("NewRequest: ", err)
+		return "", err
+	}
+	// For control over HTTP client headers, redirect policy, and other settings
+	client := &http.Client{}
+
+	// Send the request via a client
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Fatal("Do: ", err)
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	bodyString := string(bodyBytes)
+	return bodyString, err
 }
