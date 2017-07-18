@@ -21,6 +21,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -35,6 +36,12 @@ var server string
 var idFilename string
 var idFile string
 
+// Instance defines an EC2 instance by some fields
+type Instance struct {
+	ID        string `json:"InstanceId"`
+	PrivateIP string `json:"PrivateIpAddress"`
+}
+
 // scanCmd represents the scan command
 var scanCmd = &cobra.Command{
 	Use:   "scan",
@@ -43,7 +50,7 @@ var scanCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		if server != "" {
 			fmt.Printf("Connecting to server <%s>\n", server)
-			url := server + "/fingerprint"
+			url := server + "/instances"
 			res, err := scanRequest("POST", url, idFilename)
 			if err != nil {
 				fmt.Printf("Error occurred: %s\n", err.Error())
@@ -77,15 +84,15 @@ func scanRequest(method string, APIURL string, idFilename string) (string, error
 	// For control over HTTP client headers, redirect policy, and other settings
 	client := &http.Client{}
 
-	// Read our identity file and store it
-	identity, err := ioutil.ReadFile(idFilename)
-	if err != nil {
-		return "", err
-	}
+	// // Read our identity file and store it
+	// identity, err := ioutil.ReadFile(idFilename)
+	// if err != nil {
+	// 	return "", err
+	// }
 
 	// Add our form where the ssh key will be sent on
 	form := url.Values{}
-	form.Add("identity", string(identity))
+	form.Add("keyname", string(idFilename[strings.LastIndex(idFilename, "/")+1:len(idFilename)-4]))
 
 	// Form our http request
 	req, err := http.NewRequest("POST", APIURL, strings.NewReader(form.Encode()))
@@ -108,8 +115,20 @@ func scanRequest(method string, APIURL string, idFilename string) (string, error
 	defer resp.Body.Close()
 
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
-	bodyString := string(bodyBytes)
-	return bodyString, err
+	//bodyString := string(bodyBytes)
+
+	var bodyJSON []map[string]interface{}
+	json.Unmarshal(bodyBytes, &bodyJSON)
+
+	var result string
+
+	for _, instance := range bodyJSON {
+		//instanceName := instance["Tags"]["Name"].(string) //TODO
+		instanceID := instance["InstanceId"].(string)
+		privateIPAddress := instance["PrivateIpAddress"].(string)
+		result = fmt.Sprintf("Name: %s. InstanceId: %s. IP: %s", "name", instanceID, privateIPAddress)
+	}
+	return result, err
 }
 
 // formatRequest generates ascii representation of a request
