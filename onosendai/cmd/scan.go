@@ -21,7 +21,14 @@
 package cmd
 
 import (
-	"encoding/json"
+	"crypto/ecdsa"
+	"crypto/rsa"
+	"crypto/sha1"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -29,6 +36,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/amongil/blackice/blackice/ec2utils"
 	"github.com/spf13/cobra"
 )
 
@@ -50,7 +58,7 @@ var scanCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		if server != "" {
 			fmt.Printf("Connecting to server <%s>\n", server)
-			url := server + "/instances"
+			url := server + "/scan"
 			res, err := scanRequest("POST", url, idFilename)
 			if err != nil {
 				fmt.Printf("Error occurred: %s\n", err.Error())
@@ -84,15 +92,19 @@ func scanRequest(method string, APIURL string, idFilename string) (string, error
 	// For control over HTTP client headers, redirect policy, and other settings
 	client := &http.Client{}
 
-	// // Read our identity file and store it
-	// identity, err := ioutil.ReadFile(idFilename)
-	// if err != nil {
-	// 	return "", err
-	// }
+	// Read our identity file and store it
+	identity, err := ioutil.ReadFile(idFilename)
+	if err != nil {
+		return "", err
+	}
+	fingerprint, err := GetFingerprint(identity)
+	if err != nil {
+		return "", err
+	}
 
 	// Add our form where the ssh key will be sent on
 	form := url.Values{}
-	form.Add("keyname", string(idFilename[strings.LastIndex(idFilename, "/")+1:len(idFilename)-4]))
+	form.Add("identity", fingerprint)
 
 	// Form our http request
 	req, err := http.NewRequest("POST", APIURL, strings.NewReader(form.Encode()))
@@ -117,18 +129,17 @@ func scanRequest(method string, APIURL string, idFilename string) (string, error
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
 	//bodyString := string(bodyBytes)
 
-	var bodyJSON []map[string]interface{}
-	json.Unmarshal(bodyBytes, &bodyJSON)
+	// var bodyJSON []map[string]interface{}
+	// json.Unmarshal(bodyBytes, &bodyJSON)
 
-	var result string
-
-	for _, instance := range bodyJSON {
-		//instanceName := instance["Tags"]["Name"].(string) //TODO
-		instanceID := instance["InstanceId"].(string)
-		privateIPAddress := instance["PrivateIpAddress"].(string)
-		result = fmt.Sprintf("Name: %s. InstanceId: %s. IP: %s", "name", instanceID, privateIPAddress)
-	}
-	return result, err
+	// var result string
+	// for _, instance := range bodyJSON {
+	// 	//instanceName := instance["Tags"]["Name"].(string) //TODO
+	// 	instanceID := instance["InstanceId"].(string)
+	// 	privateIPAddress := instance["PrivateIpAddress"].(string)
+	// 	result = fmt.Sprintf("Name: %s. InstanceId: %s. IP: %s", "name", instanceID, privateIPAddress)
+	// }
+	return string(bodyBytes), err
 }
 
 // formatRequest generates ascii representation of a request
@@ -156,4 +167,77 @@ func formatRequest(r *http.Request) string {
 	}
 	// Return the request as a string
 	return strings.Join(request, "\n")
+}
+
+// pkcs8 reflects an ASN.1, PKCS#8 PrivateKey. See
+// ftp://ftp.rsasecurity.com/pub/pkcs/pkcs-8/pkcs-8v1_2.asn
+// and RFC5208.
+type pkcs8 struct {
+	Version    int
+	Algo       pkix.AlgorithmIdentifier
+	PrivateKey []byte
+	// optional attributes omitted.
+}
+
+var (
+	oidPublicKeyRSA   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 1}
+	oidPublicKeyECDSA = asn1.ObjectIdentifier{1, 2, 840, 10045, 2, 1}
+
+	nullAsn = asn1.RawValue{Tag: 5}
+)
+
+// MarshalPKCS8PrivateKey converts a private key to PKCS#8 encoded form.
+// See http://www.rsa.com/rsalabs/node.asp?id=2130 and RFC5208.
+func MarshalPKCS8PrivateKey(key interface{}) ([]byte, error) {
+	pkcs := pkcs8{
+		Version: 0,
+	}
+
+	switch key := key.(type) {
+	case *rsa.PrivateKey:
+		pkcs.Algo = pkix.AlgorithmIdentifier{
+			Algorithm:  oidPublicKeyRSA,
+			Parameters: nullAsn,
+		}
+		pkcs.PrivateKey = x509.MarshalPKCS1PrivateKey(key)
+	case *ecdsa.PrivateKey:
+		bytes, err := x509.MarshalECPrivateKey(key)
+		if err != nil {
+			return nil, errors.New("x509: failed to marshal to PKCS#8: " + err.Error())
+		}
+
+		pkcs.Algo = pkix.AlgorithmIdentifier{
+			Algorithm:  oidPublicKeyECDSA,
+			Parameters: nullAsn,
+		}
+		pkcs.PrivateKey = bytes
+	default:
+		return nil, errors.New("x509: PKCS#8 only RSA and ECDSA private keys supported")
+	}
+
+	bytes, err := asn1.Marshal(pkcs)
+	if err != nil {
+		return nil, errors.New("x509: failed to marshal to PKCS#8: " + err.Error())
+	}
+
+	return bytes, nil
+}
+
+// GetFingerprint return finerprint of ssh-key
+func GetFingerprint(pemFile []byte) (string, error) {
+	block, _ := pem.Decode(pemFile)
+
+	priv, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+
+	keyPKCS8, err := ec2utils.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return "", err
+	}
+
+	sha := fmt.Sprintf("% x", sha1.Sum(keyPKCS8))
+	sha = strings.Replace(sha, " ", ":", -1)
+	return sha, nil
 }
